@@ -1,6 +1,7 @@
 # BlackHole - маленькие чёрные дыры вокруг игрока.
-# Линзирование фона, горизонт событий, фотонное кольцо, аккреционный диск,
-# падающая пыль и искры, притяжение сущностей и низкий гул.
+# Линзирование фона, горизонт событий, два кольца, аккреционный диск с линзированным
+# вторым образом, красное смещение, полярные струи, пыль, искры, вспышки рождения
+# и смерти, низкий гул.
 
 import math
 import random
@@ -9,7 +10,7 @@ import time
 MAX = 8  # столько дыр держат массивы шейдера
 
 mod = Module("BlackHole", "Visuals")
-mod.setDesc("Чёрные дыры вокруг игрока: линзирование, диск, притяжение, гул")
+mod.setDesc("Чёрные дыры вокруг игрока: линзирование, диск, струи, гул")
 
 Info(mod, "Дыры")
 m_mode = Mode(mod, "Режим").add("Россыпь").add("Одна большая")
@@ -20,19 +21,24 @@ s_size = Slider(mod, "Размер").min(0.1).max(1.5).step(0.05).set(0.4)
 s_life = Slider(mod, "Время жизни").min(2).max(30).step(1).set(9).suffix(" с")
 s_delay = Slider(mod, "Пауза между рождениями").min(0.1).max(6).step(0.1).set(1.2).suffix(" с")
 
-Info(mod, "Картинка")
+Info(mod, "Искривление")
+b_warp = Checkbox(mod, "Искривлять пространство").set(True)
 s_warp = Slider(mod, "Сила искривления").min(0.2).max(3).step(0.1).set(1.2)
-m_quality = Mode(mod, "Качество").add("Красиво").add("Быстро")
+b_chroma = Checkbox(mod, "Радуга на краю").set(True)
+b_shadow = Checkbox(mod, "Горизонт событий").set(True)
+
+Info(mod, "Картинка")
 b_disk = Checkbox(mod, "Аккреционный диск").set(True)
+b_echo = Checkbox(mod, "Второй образ диска").set(True)
+b_ring = Checkbox(mod, "Фотонные кольца").set(True)
+b_red = Checkbox(mod, "Красное смещение").set(True)
+b_bloom = Checkbox(mod, "Свечение").set(True)
+b_jets = Checkbox(mod, "Полярные струи").set(True)
 b_dust = Checkbox(mod, "Падающая пыль").set(True)
 b_sparks = Checkbox(mod, "Искры внутрь").set(True)
-c_disk = ColorSetting(mod, "Цвет диска").color(255, 170, 80).alpha(False)
+s_glow = Slider(mod, "Яркость").min(0.2).max(3).step(0.1).set(1)
+g_disk = Gradient(mod, "Цвет диска").set(Color(255, 238, 205), Color(255, 108, 34)).alpha(False)
 c_halo = ColorSetting(mod, "Цвет гало").color(130, 100, 255).alpha(False)
-
-Info(mod, "Притяжение")
-b_pull = Checkbox(mod, "Затягивать сущности").set(True)
-b_pull_self = Checkbox(mod, "Тянуть и себя").set(False)
-s_pull = Slider(mod, "Сила притяжения").min(0.1).max(3).step(0.1).set(1)
 
 Info(mod, "Гул")
 b_hum = Checkbox(mod, "Звук").set(True)
@@ -47,7 +53,7 @@ btn_clear = Button(mod, "Убрать все")
 
 HOLES = []
 SEEN = set()
-STATE = {"next": 0.0, "hum": None, "hum_path": "", "hum_bad": False, "vol": 0.0, "no_pull": False}
+STATE = {"next": 0.0, "hum": None, "hum_path": "", "hum_bad": False, "vol": 0.0}
 
 
 def note(msg):
@@ -58,12 +64,30 @@ def note(msg):
     print("[BlackHole] " + key)
 
 
-def rgb01(setting, fallback):
+def hex01(color, fallback):
     try:
-        raw = setting.get().toHex().lstrip("#")
+        raw = color.toHex().lstrip("#")
         return (int(raw[0:2], 16) / 255.0, int(raw[2:4], 16) / 255.0, int(raw[4:6], 16) / 255.0)
     except Exception:
         return fallback
+
+
+def disk_colors():
+    inner = (1.0, 0.93, 0.80)
+    outer = (1.0, 0.42, 0.13)
+    try:
+        inner = hex01(g_disk.getFirst(), inner)
+        outer = hex01(g_disk.getSecond(), outer)
+    except Exception as ex:
+        note("градиент не читается: " + str(ex))
+    return (inner, outer)
+
+
+def halo_color():
+    try:
+        return hex01(c_halo.get(), (0.51, 0.39, 1.0))
+    except Exception:
+        return (0.51, 0.39, 1.0)
 
 
 def is_big():
@@ -129,12 +153,10 @@ def look_point(me, reach):
     dy = -math.sin(pitch)
     dz = math.cos(yaw) * cp
     ox, oy, oz = me.getX(), me.getY() + 1.62, me.getZ()
-    step = 0.5
-    travelled = 0.8
-    best = (ox + dx * travelled, oy + dy * travelled, oz + dz * travelled)
-    steps = int(max(reach - 0.8, 0.0) / step)
+    best = (ox + dx * 0.8, oy + dy * 0.8, oz + dz * 0.8)
+    steps = int(max(reach - 0.8, 0.0) / 0.5)
     for i in range(1, steps + 1):
-        t = 0.8 + step * i
+        t = 0.8 + 0.5 * i
         px, py, pz = ox + dx * t, oy + dy * t, oz + dz * t
         try:
             blocked = world.is_solid(int(math.floor(px)), int(math.floor(py)), int(math.floor(pz)))
@@ -180,6 +202,16 @@ def hole_fade(hole, now):
     return f * f * (3.0 - 2.0 * f)
 
 
+def hole_flash(hole, now):
+    age = now - hole["born"]
+    left = hole["life"] - age
+    if age < 0.0 or left <= 0.0:
+        return 0.0
+    birth = max(0.0, 1.0 - age / 0.45)
+    death = max(0.0, 1.0 - left / 0.55)
+    return min(max(birth * birth, death * death * 1.2), 1.4)
+
+
 def active_holes(now):
     out = []
     for hole in HOLES:
@@ -187,11 +219,12 @@ def active_holes(now):
         if fade <= 0.0:
             continue
         x, y, z = hole_pos(hole, now)
-        out.append((hole, x, y, z, fade))
+        rs = hole["rs"] * (0.4 + 0.6 * fade)  # горизонт раскрывается и схлопывается
+        out.append((hole, x, y, z, rs, fade, hole_flash(hole, now)))
     return out
 
 
-def disk_axes(tilt):
+def disk_frame(tilt):
     nx, ny, nz = math.sin(tilt) * 0.5, 1.0, math.cos(tilt) * 0.5
     ln = math.sqrt(nx * nx + ny * ny + nz * nz)
     nx, ny, nz = nx / ln, ny / ln, nz / ln
@@ -200,27 +233,27 @@ def disk_axes(tilt):
     if la < 1e-6:
         ax, ay, az, la = 1.0, 0.0, 0.0, 1.0
     ax, ay, az = ax / la, ay / la, az / la
-    return (ax, ay, az, ny * az - nz * ay, nz * ax - nx * az, nx * ay - ny * ax)
+    return (nx, ny, nz, ax, ay, az, ny * az - nz * ay, nz * ax - nx * az, nx * ay - ny * ax)
 
 
-def dust_of(out, hole, x, y, z, now, fade, tint):
-    horizon = hole["rs"] * 2.6
-    inner = horizon * 1.15
-    outer = horizon * 4.4
-    ax, ay, az, bx, by, bz = disk_axes(hole["tilt"])
+def dust_of(out, hole, x, y, z, rs, now, fade, gain, inner_c, outer_c):
+    horizon = rs * 2.6
+    near = horizon * 1.15
+    far = horizon * 4.4
+    nx, ny, nz, ax, ay, az, bx, by, bz = disk_frame(hole["tilt"])
     base = (now - hole["born"]) * 1.1 + hole["spin"]
     for j in range(12):
         ph = (base * 0.35 + j / 12.0) % 1.0
-        alpha = 200.0 * fade * math.sin(math.pi * ph)
+        alpha = 205.0 * fade * gain * math.sin(math.pi * ph)
         if alpha < 6.0:
             continue
-        r1 = inner + (outer - inner) * ((1.0 - ph) ** 1.6)
-        r2 = r1 + (outer - inner) * 0.05 * (1.0 - ph)
+        r1 = near + (far - near) * ((1.0 - ph) ** 1.6)
+        r2 = r1 + (far - near) * 0.05 * (1.0 - ph)
         a1 = base * (1.3 + 1.9 * (1.0 - ph)) + j * 2.399963
         a2 = a1 - (0.18 + 0.25 * (1.0 - ph))
         c1, s1 = math.cos(a1), math.sin(a1)
         c2, s2 = math.cos(a2), math.sin(a2)
-        white = (1.0 - ph) ** 2
+        heat = (1.0 - ph) ** 1.5
         out.extend((
             x + (ax * c1 + bx * s1) * r1,
             y + (ay * c1 + by * s1) * r1,
@@ -228,107 +261,74 @@ def dust_of(out, hole, x, y, z, now, fade, tint):
             x + (ax * c2 + bx * s2) * r2,
             y + (ay * c2 + by * s2) * r2,
             z + (az * c2 + bz * s2) * r2,
-            (tint[0] + (1.0 - tint[0]) * white) * 255.0,
-            (tint[1] + (1.0 - tint[1]) * white) * 255.0,
-            (tint[2] + (1.0 - tint[2]) * white) * 255.0,
-            alpha,
+            (outer_c[0] + (inner_c[0] - outer_c[0]) * heat) * 255.0,
+            (outer_c[1] + (inner_c[1] - outer_c[1]) * heat) * 255.0,
+            (outer_c[2] + (inner_c[2] - outer_c[2]) * heat) * 255.0,
+            min(alpha, 255.0),
         ))
 
 
-def spark_point(hole, x, y, z, j, ph):
-    horizon = hole["rs"] * 2.6
-    inner = horizon * 0.95
-    outer = horizon * 5.5
+def spark_point(hole, x, y, z, rs, j, ph):
+    horizon = rs * 2.6
+    near = horizon * 0.95
+    far = horizon * 5.5
     k = min(max(ph, 0.0), 1.0)
-    rr = inner + (outer - inner) * ((1.0 - k) ** 1.8)
+    rr = near + (far - near) * ((1.0 - k) ** 1.8)
     ang = j * 2.399963 + hole["spin"] + (1.0 - k) * 2.4
     ele = math.sin(j * 1.7 + hole["tilt"]) * 1.15
     ce = math.cos(ele)
     return (x + math.cos(ang) * ce * rr, y + math.sin(ele) * rr, z + math.sin(ang) * ce * rr)
 
 
-def sparks_of(out, hole, x, y, z, now, fade, halo):
+def sparks_of(out, hole, x, y, z, rs, now, fade, gain, halo):
     base = (now - hole["born"]) * 0.55
     for j in range(10):
         ph = (base + j * 0.1) % 1.0
-        alpha = 235.0 * fade * math.sin(math.pi * ph)
+        alpha = 235.0 * fade * gain * math.sin(math.pi * ph)
         if alpha < 6.0:
             continue
-        x1, y1, z1 = spark_point(hole, x, y, z, j, ph)
-        x2, y2, z2 = spark_point(hole, x, y, z, j, ph - 0.06)
+        x1, y1, z1 = spark_point(hole, x, y, z, rs, j, ph)
+        x2, y2, z2 = spark_point(hole, x, y, z, rs, j, ph - 0.06)
         white = ph ** 2
         out.extend((
             x1, y1, z1, x2, y2, z2,
             (halo[0] + (1.0 - halo[0]) * white) * 255.0,
             (halo[1] + (1.0 - halo[1]) * white) * 255.0,
             (halo[2] + (1.0 - halo[2]) * white) * 255.0,
-            alpha,
+            min(alpha, 255.0),
         ))
 
 
-def pull_entities(now, me, holes):
-    if STATE["no_pull"] or not holes:
-        return
-    others = b_pull.get()
-    myself = b_pull_self.get()
-    if not others and not myself:
-        return
-    strength = s_pull.get()
-    try:
-        my_id = me.getId()
-    except Exception:
-        my_id = None
-    victims = []
-    if others:
-        try:
-            victims = list(world.entities())
-        except Exception as ex:
-            note("сущности не читаются: " + str(ex))
-            STATE["no_pull"] = True
-            return
-    elif myself:
-        victims = [me]
-    seen = 0
-    for ent in victims:
-        if seen >= 64:
-            break
-        seen += 1
-        try:
-            same = my_id is not None and ent.getId() == my_id
-        except Exception:
-            same = False
-        if same and not myself:
-            continue
-        try:
-            ex_, ey_, ez_ = ent.getX(), ent.getY() + 0.9, ent.getZ()
-        except Exception:
-            continue
-        ax = ay = az = 0.0
-        for hole, hx, hy, hz, fade in holes:
-            dx, dy, dz = hx - ex_, hy - ey_, hz - ez_
-            d2 = dx * dx + dy * dy + dz * dz
-            reach = hole["rs"] * 22.0
-            if d2 > reach * reach or d2 < 0.0004:
+def jets_of(out, hole, x, y, z, rs, now, fade, gain, inner_c, halo):
+    horizon = rs * 2.6
+    nx, ny, nz, ax, ay, az, bx, by, bz = disk_frame(hole["tilt"])
+    age = now - hole["born"]
+    for side in (1.0, -1.0):
+        for i in range(7):
+            tip = i / 7.0
+            alpha = 215.0 * fade * gain * ((1.0 - tip) ** 1.4) * (0.72 + 0.28 * math.sin(age * 6.0 - i * 0.8))
+            if alpha < 6.0:
                 continue
-            d = math.sqrt(d2)
-            g = min(strength * 0.33 * fade * hole["rs"] / (d2 * 0.35 + 1.0), 0.5)
-            ax += dx / d * g
-            ay += dy / d * g
-            az += dz / d * g
-        if ax == 0.0 and ay == 0.0 and az == 0.0:
-            continue
-        vx, vy, vz = ax, ay, az
-        try:
-            v = ent.getVelocity()
-            vx, vy, vz = v.x + ax, v.y + ay, v.z + az
-        except Exception:
-            pass
-        try:
-            ent.setVelocity(vx, vy, vz)
-        except Exception as ex:
-            note("скорость не задаётся: " + str(ex))
-            STATE["no_pull"] = True
-            return
+            t1 = horizon * (0.9 + i * 0.95)
+            t2 = horizon * (0.9 + (i + 1) * 0.95)
+            w1 = horizon * 0.1 * (1.0 + i * 0.3)
+            w2 = horizon * 0.1 * (1.0 + (i + 1) * 0.3)
+            p1 = age * 3.1 * side + i * 0.85 + hole["spin"]
+            p2 = p1 + 0.85
+            c1, s1 = math.cos(p1), math.sin(p1)
+            c2, s2 = math.cos(p2), math.sin(p2)
+            out.extend((
+                x + nx * side * t1 + (ax * c1 + bx * s1) * w1,
+                y + ny * side * t1 + (ay * c1 + by * s1) * w1,
+                z + nz * side * t1 + (az * c1 + bz * s1) * w1,
+                x + nx * side * t2 + (ax * c2 + bx * s2) * w2,
+                y + ny * side * t2 + (ay * c2 + by * s2) * w2,
+                z + nz * side * t2 + (az * c2 + bz * s2) * w2,
+                (inner_c[0] + (halo[0] - inner_c[0]) * tip) * 255.0,
+                (inner_c[1] + (halo[1] - inner_c[1]) * tip) * 255.0,
+                (inner_c[2] + (halo[2] - inner_c[2]) * tip) * 255.0,
+                min(alpha, 255.0),
+            ))
 
 
 def hum_stop():
@@ -349,11 +349,11 @@ def hum_wanted(me, holes):
     mx, my, mz = me.getX(), me.getY() + 1.4, me.getZ()
     span = max(eff_radius() * 2.0, 8.0)
     best = 0.0
-    for hole, hx, hy, hz, fade in holes:
+    for hole, hx, hy, hz, rs, fade, flash in holes:
         dx, dy, dz = hx - mx, hy - my, hz - mz
         d = math.sqrt(dx * dx + dy * dy + dz * dz)
         near = 1.0 - min(d / span, 1.0)
-        loud = fade * near * near * min(1.0, hole["rs"] * 1.8)
+        loud = fade * near * near * min(1.0, rs * 1.8)
         if loud > best:
             best = loud
     return best * s_hum.get()
@@ -397,13 +397,40 @@ uniform float Count;
 uniform float Warp;
 uniform float Chroma;
 uniform float DiskOn;
-uniform vec3 Tint;
+uniform float EchoOn;
+uniform float RingOn;
+uniform float RedOn;
+uniform float BloomOn;
+uniform float ShadowOn;
+uniform float Glow;
+uniform vec3 TintIn;
+uniform vec3 TintOut;
 uniform vec3 Halo;
 
 vec2 dirToUv(mat4 vp, vec3 d, vec2 fallback) {
     vec4 c = vp * vec4(d * 16.0, 1.0);
     if (c.w <= 0.0001) return fallback;
     return clamp(c.xy / c.w * 0.5 + 0.5, vec2(0.0015), vec2(0.9985));
+}
+
+vec3 diskSample(vec3 rd, vec3 pos, vec3 n, float horizon, float spin, float maxT) {
+    float dn = dot(rd, n);
+    if (abs(dn) < 0.002) return vec3(0.0);
+    float t = dot(pos, n) / dn;
+    if (t <= 0.0 || t >= maxT) return vec3(0.0);
+    vec3 q = rd * t - pos;
+    float inner = horizon * 1.25;
+    float outer = horizon * 4.6;
+    float k = (length(q) - inner) / (outer - inner);
+    if (k <= 0.0 || k >= 1.0) return vec3(0.0);
+    vec3 t1 = normalize(cross(n, vec3(0.0, 0.0, 1.0)));
+    vec3 t2 = cross(n, t1);
+    float ang = atan(dot(q, t2), dot(q, t1));
+    float band = smoothstep(0.0, 0.10, k) * (1.0 - smoothstep(0.5, 1.0, k));
+    float swirl = 0.55 + 0.45 * sin(ang * 3.0 - spin * 2.4 + k * 14.0);
+    float fine = 0.72 + 0.28 * sin(k * 46.0 - spin * 3.4);
+    float doppler = 0.40 + 0.60 * pow(0.5 + 0.5 * sin(ang - spin * 0.6), 1.6);
+    return mix(TintIn, TintOut, pow(k, 0.7)) * band * swirl * fine * doppler;
 }
 
 void main() {
@@ -421,14 +448,13 @@ void main() {
         sceneDist = length(scenePoint.xyz / scenePoint.w);
     }
 
-    mat4 viewProj = inverse(InvViewProj);
-
     vec3 bend = vec3(0.0);
     vec3 disk = vec3(0.0);
     float lens = 0.0;
     float shadow = 0.0;
     float ring = 0.0;
     float haze = 0.0;
+    float red = 0.0;
 
     for (int i = 0; i < 8; i++) {
         if (float(i) >= Count) break;
@@ -437,6 +463,7 @@ void main() {
         float rs = Holes[i].w;
         float fade = Extra[i].x;
         float spin = Extra[i].y;
+        float flash = Extra[i].w;
         if (rs <= 0.0 || fade <= 0.0) continue;
 
         float along = dot(dir, pos);
@@ -450,49 +477,53 @@ void main() {
         float b = max(length(perp), 0.0005);
         vec3 toward = perp / b;
         float horizon = rs * 2.6;
+        float live = fade * visible;
 
-        float defl = min(Warp * 2.0 * rs / b, 1.5) * fade * visible;
-        bend += toward * defl;
-        lens += defl;
+        if (Warp > 0.001) {
+            float defl = min(Warp * 2.0 * rs / b, 1.5) * live;
+            bend += toward * defl;
+            lens += defl;
+        }
 
         float aa = max(dist * 0.006, 0.012);
         float core = 1.0 - smoothstep(horizon - aa, horizon + aa, b);
-        shadow = max(shadow, core * fade * visible);
+        if (ShadowOn > 0.5) {
+            shadow = max(shadow, core * live);
+        }
 
-        float rw = max(horizon * 0.13, 0.015);
-        float dr = (b - horizon * 1.05) / rw;
-        ring += exp(-dr * dr) * fade * visible;
+        if (RingOn > 0.5) {
+            float rw = max(horizon * 0.13, 0.015);
+            float dr = (b - horizon * 1.05) / rw;
+            ring += exp(-dr * dr) * live * (1.0 + flash * 4.0);
+            float dr2 = (b - horizon * 1.42) / max(horizon * 0.42, 0.05);
+            ring += exp(-dr2 * dr2) * live * 0.26;
+        }
 
-        haze += fade * visible * (horizon * horizon) / (b * b + horizon * horizon * 1.4) * (1.0 - core);
+        haze += live * (horizon * horizon) / (b * b + horizon * horizon * 1.4) * (1.0 - core) * (1.0 + flash * 2.0);
+
+        if (RedOn > 0.5) {
+            red = max(red, live * (1.0 - smoothstep(horizon, horizon * 3.2, b)) * (1.0 - core));
+        }
 
         if (DiskOn > 0.5) {
             vec3 n = normalize(vec3(sin(Extra[i].z) * 0.5, 1.0, cos(Extra[i].z) * 0.5));
-            float dn = dot(dir, n);
-            if (abs(dn) > 0.002) {
-                float t = dot(pos, n) / dn;
-                if (t > 0.0 && t < min(sceneDist, 128.0)) {
-                    vec3 q = dir * t - pos;
-                    float r = length(q);
-                    float inner = horizon * 1.25;
-                    float outer = horizon * 4.5;
-                    float k = (r - inner) / (outer - inner);
-                    if (k > 0.0 && k < 1.0) {
-                        float band = smoothstep(0.0, 0.12, k) * (1.0 - smoothstep(0.55, 1.0, k));
-                        vec3 t1 = normalize(cross(n, vec3(0.0, 0.0, 1.0)));
-                        vec3 t2 = cross(n, t1);
-                        float ang = atan(dot(q, t2), dot(q, t1));
-                        float swirl = 0.55 + 0.45 * sin(ang * 3.0 - spin * 2.4 + k * 14.0);
-                        float doppler = 0.45 + 0.55 * (0.5 + 0.5 * sin(ang - spin * 0.6));
-                        vec3 hot = mix(Tint, vec3(1.0), pow(1.0 - k, 3.0) * 0.8);
-                        disk += hot * band * swirl * doppler * fade * visible * 1.4;
-                    }
-                }
+            float maxT = min(sceneDist, 160.0);
+            disk += diskSample(dir, pos, n, horizon, spin, maxT) * (live * 1.35);
+            if (EchoOn > 0.5 && Warp > 0.001) {
+                vec3 bent = normalize(dir + toward * min(Warp * 3.6 * rs / b, 2.4));
+                disk += diskSample(bent, pos, n, horizon, spin, maxT) * (live * 0.7);
             }
         }
     }
 
     vec3 color = background;
+
     if (lens > 0.0005) {
+        mat4 viewProj = ProjMat * ModelViewMat;
+        vec2 probe = dirToUv(viewProj, dir, vec2(-1.0));
+        if (probe.x < 0.0 || distance(probe, uv) > 0.02) {
+            viewProj = inverse(InvViewProj);
+        }
         vec3 warped;
         if (Chroma > 0.5) {
             vec2 uvR = dirToUv(viewProj, normalize(dir + bend * 1.12), uv);
@@ -506,10 +537,19 @@ void main() {
         color *= 1.0 - 0.5 * clamp(lens * 0.7, 0.0, 1.0);
     }
 
+    if (red > 0.001) {
+        color = mix(color, color * vec3(1.25, 0.55, 0.32), clamp(red, 0.0, 1.0) * 0.75);
+    }
+
     color = mix(color, vec3(0.0), clamp(shadow, 0.0, 1.0));
-    color += Tint * ring * 1.5;
-    color += Halo * haze * 0.45;
-    color += disk;
+    color += TintIn * ring * 1.45 * Glow;
+    color += Halo * haze * 0.45 * Glow;
+    color += disk * Glow;
+
+    if (BloomOn > 0.5) {
+        float bright = max(max(color.r, color.g), color.b);
+        color += TintIn * pow(clamp(bright - 0.9, 0.0, 1.6), 1.8) * 0.16;
+    }
 
     fragColor = vec4(color, 1.0);
 }
@@ -552,10 +592,7 @@ def on_tick(event):
             spawn_random(me, now)
             STATE["next"] = now + s_delay.get()
 
-        holes = active_holes(now)
-        pull_entities(now, me, holes)
-
-        goal = hum_wanted(me, holes)
+        goal = hum_wanted(me, active_holes(now))
         STATE["vol"] = STATE["vol"] + (goal - STATE["vol"]) * 0.18
         hum_apply(STATE["vol"])
     except Exception as ex:
@@ -591,23 +628,33 @@ def on_render(event):
         now = time.time()
         camera = event.getCamera().getPos()
         cx, cy, cz = camera.x, camera.y, camera.z
-        tint = rgb01(c_disk, (1.0, 0.66, 0.31))
-        halo = rgb01(c_halo, (0.51, 0.39, 1.0))
+        inner_c, outer_c = disk_colors()
+        halo = halo_color()
+        gain = s_glow.get()
         want_dust = b_dust.get()
         want_sparks = b_sparks.get()
+        want_jets = b_jets.get()
 
         streaks = []
         shown = 0
-        for hole, x, y, z, fade in active_holes(now):
+        for hole, x, y, z, rs, fade, flash in active_holes(now):
             if shown >= MAX:
                 break
-            lensing.set("Holes[%d]" % shown, x - cx, y - cy, z - cz, hole["rs"])
-            lensing.set("Extra[%d]" % shown, fade, hole["spin"] + (now - hole["born"]) * 1.6, hole["tilt"], 0.0)
+            lensing.set("Holes[%d]" % shown, x - cx, y - cy, z - cz, rs)
+            lensing.set(
+                "Extra[%d]" % shown,
+                fade,
+                hole["spin"] + (now - hole["born"]) * 1.6,
+                hole["tilt"],
+                flash,
+            )
             shown += 1
             if want_dust:
-                dust_of(streaks, hole, x, y, z, now, fade, tint)
+                dust_of(streaks, hole, x, y, z, rs, now, fade, gain, inner_c, outer_c)
             if want_sparks:
-                sparks_of(streaks, hole, x, y, z, now, fade, halo)
+                sparks_of(streaks, hole, x, y, z, rs, now, fade, gain, halo)
+            if want_jets:
+                jets_of(streaks, hole, x, y, z, rs, now, fade, gain, inner_c, halo)
 
         if shown == 0:
             return
@@ -615,11 +662,19 @@ def on_render(event):
         if streaks:
             render3d.lines(event, streaks, True, through=False)
 
+        warp = s_warp.get() if b_warp.get() else 0.0
         lensing.set("Count", float(shown))
-        lensing.set("Warp", s_warp.get())
-        lensing.set("Chroma", 1.0 if m_quality.get() == "Красиво" else 0.0)
+        lensing.set("Warp", warp)
+        lensing.set("Chroma", 1.0 if (b_chroma.get() and warp > 0.0) else 0.0)
         lensing.set("DiskOn", 1.0 if b_disk.get() else 0.0)
-        lensing.set("Tint", tint[0], tint[1], tint[2])
+        lensing.set("EchoOn", 1.0 if b_echo.get() else 0.0)
+        lensing.set("RingOn", 1.0 if b_ring.get() else 0.0)
+        lensing.set("RedOn", 1.0 if b_red.get() else 0.0)
+        lensing.set("BloomOn", 1.0 if b_bloom.get() else 0.0)
+        lensing.set("ShadowOn", 1.0 if b_shadow.get() else 0.0)
+        lensing.set("Glow", gain)
+        lensing.set("TintIn", inner_c[0], inner_c[1], inner_c[2])
+        lensing.set("TintOut", outer_c[0], outer_c[1], outer_c[2])
         lensing.set("Halo", halo[0], halo[1], halo[2])
         lensing.fullscreen(event)
     except Exception as ex:
